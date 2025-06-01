@@ -1,0 +1,13 @@
+{
+    ".": "DOT",
+    ",": "COMMA",
+    ":": "COLON",
+    ";": "SEMICOLON",
+    "``": "LQUOTE",
+    "''": "RQUOTE",
+    "$": "DOLLAR",
+    "#": "HASH",
+    "=": "EQUALS",
+    "|": "_",
+    "`": ""
+  }

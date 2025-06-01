@@ -1,0 +1,15 @@
+(ADJP
+  (NP
+    (NP
+      (NP (NNP Pierre) (NNP Vinken))
+      (COMMA ,)
+      (NP (CD 61) (NNS years) (JJ old))
+      (COMMA ,))
+    (VP
+      (MD will)
+      (VP
+        (VB join)
+        (NP (DT the) (NN board))
+        (PP-CLR (IN as) (NP (DT a))))))
+  (JJ nonexecutive)
+  (PP (NN director) (NP (NP (NNP Nov.) (CD 29)) (DOT .)))) (p=6.10523e-66)
