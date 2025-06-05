@@ -7,6 +7,10 @@ from nltk.parse import ViterbiParser
 from nltk.grammar import Nonterminal, read_grammar, PCFG
 from nltk.tree import ProbabilisticTree, Tree
 from nltk.tokenize import TreebankWordTokenizer
+from provider import LLMProbabilityProvider
+from local_llm import LocalLLM
+
+from viterbi import InterpolatingPhraseViterbiParser as VParser
 
 
 import os
@@ -99,9 +103,24 @@ def test_phrase_chart_parser():
     with open("induced_gramma.cfg", "r") as f:
         grammar_str = f.read()
     grammar = PCFG.fromstring(grammar_str)
+    
+    
+    llm = LocalLLM(model_name="llama3_1-70b")
+    
+    provider = LLMProbabilityProvider(llm, temperature=0.1)
+    
+    
+    parser = VParser(
+        grammar=grammar,
+        ext_provider=provider,
+        theta=0.8,  # Weight for the original grammar probabilities
+        prob_floor=1e-10,
+        trace=1,  # Set to a higher value for more verbose output
+    )
+    
     # grammar = PCFG(Nonterminal('ROOT'), grammar.productions())
     # print(grammar.start())
-    parser = PhraseViterbiParser(grammar)
+    # parser = VParser(grammar)
     # parser.trace(2)
     # parser = PhrasePChartParser(grammar)
     

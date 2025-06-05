@@ -1,22 +1,16 @@
 # Changelog
-[0.1.0] - 2025-05-31
-## Added
-- Initial implementation of natural language parser using NLTK
-- Custom parser implementations:
-    - PhraseChartParser - extends NLTK's ChartParser to extract phrases
-    - PhrasePChartParser - extends NLTK's  BottomUpProbabilisticChartParser with phrase extraction
-    - PhraseViterbiParser - extends NLTK's ViterbiParser with enhanced diagnostics
-- tracing capabilities in PhraseViterbiParser:
-- Detection of nonterminals covering full spans
-- Identification of longest subsequence recognized by start symbol
-- Probability reporting for constituents
-- Test function test_phrase_chart_parser for demonstration
-- Utility function transform_sentences_to_terminals for converting sentences to terminal grammar productions
-- Grammar file support using PCFG format
-- create a wrapper for all root level sentences
-- ccreate a mapping of unrecognized tokens and the values they will be converted to.
 
-## Technical
-- Integration with NLTK library for parsing functionality
-- Support for probabilistic context-free grammars (PCFG)
-- TreebankWordTokenizer implementation for sentence tokenization
+[0.1.1] - 2025-06-05
+
+## Added
+- TokenLevelProbabilityProvider: Uses LLM token-level probabilities for grammar rule scoring.
+- TokenLevelViterbiParser: Viterbi parser that interpolates between PCFG and LLM token-level probabilities.
+- Redundancy penalty in LLM probability calculation to discourage unary chains (e.g., NP -> NP).
+- Precomputation of span probabilities for all possible text spans before parsing.
+- Integration with LocalLLM for efficient local inference.
+
+## Changed
+- Viterbi parsing logic to interpolate between grammar and LLM probabilities using a configurable theta parameter.
+
+## Fixed
+- Reduced excessive unary and nested constituents in output trees.
