@@ -114,5 +114,5 @@ for lhs_str, expansions in rules_by_lhs.items():
 
 grammar_text = "\n".join(grammar_lines)
 
-with open("induced_gramma.cfg", "w") as outfile:
+with open("induced_grammar.cfg", "w") as outfile:
     outfile.write(grammar_text)

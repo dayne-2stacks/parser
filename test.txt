@@ -1,6 +1,0 @@
-S -> NP-SBJ VP
-NP-SBJ -> NP ADJP
-NP -> NNP NNP
-NNP -> 'Pierre'
-NP-SBJ -> -NONE-
--NONE- -> '*-1'

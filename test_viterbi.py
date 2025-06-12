@@ -23,7 +23,7 @@ def main():
     # """
     # grammar = PCFG.fromstring(grammar_str)
     
-    with open("induced_gramma.cfg", "r") as f:
+    with open("grammar/induced_grammar.cfg", "r") as f:
         grammar_str = f.read()
     grammar = PCFG.fromstring(grammar_str)
     
@@ -40,12 +40,15 @@ def main():
     parser = TokenLevelViterbiParser(
         grammar=grammar,
         token_provider=provider,
-        theta=0.8, 
-        trace=2,  # Detailed tracing
+        theta=0.9, 
+        # trace=2,  # Detailed tracing
     )
 
     test_sentences = [
-        "Pierre bans taxes in America, but left home because he was scared."
+        # "Pierre bans taxes in America, but left home because he was scared."
+        # "Pierre Vinken , 61 years old, will join the board as a nonexecutive director Nov. 29."
+        "Pierre Vinken is 61 years old."
+        
     ]
     
     for sentence in test_sentences:

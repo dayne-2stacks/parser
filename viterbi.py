@@ -3,7 +3,7 @@ import logging
 from typing import List, Dict, Any, Tuple, Sequence, Iterable
 from nltk.grammar import Nonterminal, PCFG, ProbabilisticProduction as Production
 from collections import defaultdict
-from provider import ExternalProbabilityProvider, TokenLevelProbabilityProvider
+from provider import  TokenLevelProbabilityProvider
 from nltk.parse.viterbi import ViterbiParser
 from nltk.tree import Tree, ProbabilisticTree
 import math
@@ -12,13 +12,27 @@ from functools import reduce
 # Logging
 LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
+
+# Logger for provider events
+constituent_logger = logging.getLogger("constituent")
+constituent_logger.setLevel(logging.INFO)
+constituent_handler = logging.FileHandler("logs/constituent.log")
+constituent_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+constituent_logger.addHandler(constituent_handler)
+
+# Logger for logits events
+# logits_logger = logging.getLogger("logits")
+# logits_logger.setLevel(logging.INFO)
+# logits_handler = logging.FileHandler("logits.log")
+# logits_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+# logits_logger.addHandler(logits_handler)
     
 
 class _Interpolator:
     def __init__(
         self,
         grammar:PCFG,
-        provider: ExternalProbabilityProvider,
+        provider: TokenLevelProbabilityProvider,
         *,
         theta: float = 0.8,
         prob_floor: float = 1e-12,
@@ -68,17 +82,13 @@ class _Interpolator:
                 new_prods.append(Production(lhs, prod.rhs(), prob=m / Z))
 
         return PCFG(self._g.start(), new_prods)
-        
-        
-
-
 
 class InterpolatingPhraseViterbiParser(ViterbiParser):
 
     def __init__(
         self,
         grammar: PCFG,
-        ext_provider: ExternalProbabilityProvider,
+        ext_provider: TokenLevelProbabilityProvider,
         *,
         theta: float = 0.8,
         prob_floor: float = 1e-12,
@@ -121,7 +131,6 @@ class TokenLevelViterbiParser(ViterbiParser):
         tokens = list(tokens)
         self._grammar.check_coverage(tokens)
         
-        LOGGER.info("Precomputing span probabilities using llm")
         span_probs = self._token_provider.set_text_and_precompute(tokens)
         
         self.current_tokens = tokens
@@ -136,6 +145,9 @@ class TokenLevelViterbiParser(ViterbiParser):
             if self._trace:
                 print(f"Token: {token}")
             constituents[index, index+1, token] = token
+            # constituent_logger.info(
+            #     f"Inserting token '{token}' at index {index} into constituents table."
+            # )
             if self._trace > 1:
                 self._trace_lexical_insertion(token, index, len(tokens))
                 
@@ -168,12 +180,16 @@ class TokenLevelViterbiParser(ViterbiParser):
             
             for production, children in instantiations:
                 subtrees = [c for c in children if isinstance(c, Tree)]
-                
                 grammar_prob = reduce(lambda pr, t: pr*t.prob(), subtrees, production.prob())
-                
                 llm_prob = self._get_llm_probability(production, children, span)
-                
                 interpolated_prob = self._theta * grammar_prob + (1.0 - self._theta) * llm_prob
+                constituent_logger.info(
+                    f"Production '{production}' with children {children} has \n \
+                    \t LLM probability {llm_prob:.8f} \n \
+                    \t grammar probability {grammar_prob:.8f} \n \
+                    \t interpolated probability {interpolated_prob:.8f} \n \
+                    for span {span}."
+                )
                 
                 node = production.lhs().symbol()
                 tree = ProbabilisticTree(node, children, prob=interpolated_prob)
@@ -191,6 +207,7 @@ class TokenLevelViterbiParser(ViterbiParser):
                         
                 if c is None or c.prob() < tree.prob():
                     constituents[span[0], span[1], production.lhs()] = tree
+                    constituent_logger.info(f"Inserting production '{production}' with probability {interpolated_prob:.8f} for span {span} into constituents table.")
                     changed = True
     
     def _get_llm_probability(self, production, children, span):
@@ -201,36 +218,23 @@ class TokenLevelViterbiParser(ViterbiParser):
         start, end = span
         
         # get the probability of the LHS for this span
-        lhs_prob = self._token_provider._span_probs.get((start, end), {}).get(lhs.symbol(), 0.001)
-        
-        # Check for redundancy
-        redundancy_penalty = 1.0
-        if len(children) == 1 and isinstance(children[0], Tree) and lhs.symbol() == children[0].label():
-            redundancy_penalty = 1e-7  # Heavily penalize unary redundancy
-        
-        if all(not isinstance(c, Tree) for c in children):
-            return lhs_prob * redundancy_penalty
-        
+        lhs_prob = self._token_provider._span_probs.get((start, end), {}).get(Nonterminal(lhs.symbol()), 0)
+
         child_probs = 1.0
         for child in children:
             if isinstance(child, Tree):
                 # If the child is a tree, use its probability
                 child_span = self._get_tree_span(child, span[0])
                 child_lhs = Nonterminal(child.label())
-                child_prob = self._token_provider._span_probs.get(child_span, {}).get(child_lhs, 0.001)
+                constituent_logger.warning("Child label: %s, span: %s, child lhs: %s", child.label(), child_span, child_lhs)
+                child_prob = self._token_provider._span_probs.get(child_span, {}).get(child_lhs, 0)
                 child_probs *= child_prob
-                
-        # Avoid zero probabilities
-        if lhs_prob == 0 or child_probs == 0:
-            return 10e-12
-            
+
         return lhs_prob * child_probs
-    
+
     def _get_tree_span(self, tree, start_offset):
         """
         Calculate the span covered by a subtree given the start offset.
-        
-        This is a helper method to identify the span of text covered by a subtree.
         """
         # Calculate the span based on the number of leaf nodes
         length = len(tree.leaves())

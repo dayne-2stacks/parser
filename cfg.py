@@ -19,8 +19,6 @@ class CustomCFG(CFG):
     def fromstring(cls, input, encoding=None):
         """
         Return the grammar instance corresponding to the input string(s).
-
-        :param input: a grammar, either in the form of a string or as a list of strings.
         """
         start, productions = read_grammar(
             input, nonterm_parser, encoding=encoding
