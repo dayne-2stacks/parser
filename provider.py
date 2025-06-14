@@ -39,21 +39,22 @@ class TokenLevelProbabilityProvider:
         self._llm = llm
         self._nonterminals = nonterminals
         
-        # Map non terminals to their token IDs in the LLM's vocabulary
-        self._nt_token_ids = self._map_nonterminals_to_token_ids() 
-        
-    def _map_nonterminals_to_token_ids(self) -> Dict[str, int]:
-        """
-        Map non-terminals to their token IDs in the LLM's vocabulary.
-        """
-        nt_token_ids = {}
+        # Map non-terminals to the sequence of token ids that represent them in
+        # the LLM vocabulary.  Some symbols (e.g. "NP-SBJ") are tokenised into
+        # multiple tokens, so we keep the full sequence to compute probabilities
+        # correctly when querying the model.
+        self._nt_token_seqs = self._map_nonterminals_to_token_seqs()
+
+    def _map_nonterminals_to_token_seqs(self) -> Dict[str, List[int]]:
+        """Map non-terminals to their corresponding token id sequences."""
+        nt_token_ids: Dict[str, List[int]] = {}
         for nt in self._nonterminals:
-            # Add a space before the symbol
+            # Add a space before the symbol to mimic generation from the model
             token_ids = self._llm.tokenizer.encode(f" {nt}", add_special_tokens=False)
-            # Use the first token ID if the symbol gets tokenized into multiple tokens
-            # generative nonterminals will have the same root token ID
-            nt_token_ids[nt] = token_ids[0] if token_ids else None
-            provider_logger.info(f"Non-terminal '{nt}' mapped to token ID {nt_token_ids[nt]}")
+            nt_token_ids[nt] = token_ids
+            provider_logger.info(
+                f"Non-terminal '{nt}' mapped to token IDs {token_ids}"
+            )
         return nt_token_ids
     
     def get_span_probabilities(
@@ -70,7 +71,7 @@ class TokenLevelProbabilityProvider:
             
             # Create prompt asking for the syntactic category
             prompt = (
-                # f"Given the possible nonterminal symbols {', '.join(self._nonterminals)}, "
+                f"Given the possible nonterminal symbols {', '.join(self._nonterminals)}, "
                 "Using the nonterminal symbols of the Penn Treebank corpus, "
                 f"the phrase '{span_str}' in the text '{text}' forms the "
                 f"syntactic category of"
@@ -83,33 +84,57 @@ class TokenLevelProbabilityProvider:
                 outputs = self._llm.model(tokens.to(self._llm.model.device))
                 logits = outputs.logits[0, -1, :]  
             
-            # Create a mask for nonterminal tokens
+            # Create a mask for the first token of every non-terminal symbol
             mask = torch.zeros_like(logits)
-            for nt, token_id in self._nt_token_ids.items():
-                logits_logger.info(f"Non-terminal '{nt}' token ID: {token_id}, logits: {logits[token_id] if token_id is not None else 'N/A'}")
-                if token_id is not None:
-                    mask[token_id] = 1.0
+            for nt, token_seq in self._nt_token_seqs.items():
+                first_token = token_seq[0] if token_seq else None
+                logits_logger.info(
+                    f"Non-terminal '{nt}' first token ID: {first_token}, logits: {logits[first_token] if first_token is not None else 'N/A'}"
+                )
+                if first_token is not None:
+                    mask[first_token] = 1.0
             
             # Apply mask and softmax
             masked_logits = logits * mask
             masked_logits[mask == 0] = float('-inf')  # Set non-NT tokens to -inf
             probs = F.softmax(masked_logits, dim=0)
-            
-            # Get top 5 candidates and their probabilities
-            topk = torch.topk(probs, 5)
-            topk_indices = topk.indices.tolist()
-            topk_probs = topk.values.tolist()
-            topk_tokens = [self._llm.tokenizer.decode([idx]) for idx in topk_indices]
-            topk_results = list(zip(topk_tokens, topk_probs))
+
+            # Convert to dictionary of probabilities using multi-token sequences
+            span_probs: Dict[Nonterminal, float] = {}
+            device = self._llm.model.device
+            for nt, token_seq in self._nt_token_seqs.items():
+                if not token_seq:
+                    continue
+
+                prob = probs[token_seq[0]].item()
+
+                # If the symbol is represented by multiple tokens, generate the
+                # follow-up tokens one by one and multiply their probabilities.
+                if len(token_seq) > 1:
+                    context = torch.cat(
+                        [tokens.to(device), torch.tensor([[token_seq[0]]], device=device)],
+                        dim=1,
+                    )
+                    for next_id in token_seq[1:]:
+                        with torch.no_grad():
+                            out = self._llm.model(context)
+                            next_logits = out.logits[0, -1, :]
+                        next_probs = F.softmax(next_logits, dim=0)
+                        prob *= next_probs[next_id].item()
+                        context = torch.cat(
+                            [context, torch.tensor([[next_id]], device=device)],
+                            dim=1,
+                        )
+
+                span_probs[Nonterminal(nt)] = prob
+                logits_logger.info(
+                    f"Probability for non-terminal '{nt}' with tokens {token_seq} in the span '{span_str}': {prob:.8f}"
+                )
+
+            # Optional: log top 5 candidates for debugging
+            sorted_probs = sorted(span_probs.items(), key=lambda x: x[1], reverse=True)[:5]
+            topk_results = [(nt.symbol(), p) for nt, p in sorted_probs]
             print(f"Top 5 candidates for span '{span_str}': {topk_results}")
-            
-            # Convert to dictionary of probabilities
-            span_probs = {}
-            for nt, token_id in self._nt_token_ids.items():
-                if token_id is not None:
-                    prob = probs[token_id].item()
-                    span_probs[Nonterminal(nt)] = prob
-                    logits_logger.info(f"Probability for non-terminal '{nt}' with id {token_id}: {prob:.4f}")
 
             result[(start, end)] = span_probs
             provider_logger.info(
