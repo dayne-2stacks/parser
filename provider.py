@@ -103,8 +103,8 @@ class TokenLevelProbabilityProvider:
             new_ctx = torch.cat(
                 [context, torch.tensor([[tok]], device=device)], dim=1
             )
-            sub = self._predict_recursive(new_ctx, child, prob * p)
-            for nt, v in sub.items():
+            sub_nodes = self._predict_recursive(new_ctx, child, prob * p)
+            for nt, v in sub_nodes.items():
                 results[nt] = results.get(nt, 0.0) + v
 
         leftover = max(1.0 - total_child_prob, 0.0)
@@ -125,7 +125,7 @@ class TokenLevelProbabilityProvider:
             span_text = text.split()[start:end]
             span_str = " ".join(span_text)
             
-            # Create prompt asking for the syntactic category
+            
             prompt = (
                 f"Given the possible nonterminal symbols {', '.join(self._nonterminals)}, "
                 "Using the nonterminal symbols of the Penn Treebank corpus, "
@@ -141,7 +141,7 @@ class TokenLevelProbabilityProvider:
                     f"Probability for non-terminal '{nt.symbol()}' in the span '{span_str}': {p:.8f}"
                 )
 
-            # Optional: log top 5 candidates for debugging
+       
             sorted_probs = sorted(span_probs.items(), key=lambda x: x[1], reverse=True)[:5]
             topk_results = [(nt.symbol(), p) for nt, p in sorted_probs]
             print(f"Top 5 candidates for span '{span_str}': {topk_results}")
@@ -162,8 +162,8 @@ class TokenLevelProbabilityProvider:
         n = len(tokens)
         
         # Generate all possible spans
-        spans = [(i, j) for i in range(n) for j in range(i+1, n+1)]
-        
+        spans += [(start, start+length) for length in range(1,n+1) for start in range(n-length+1)]
+
         # Get span probabilities from LLM
         self._span_probs = self.get_span_probabilities(self._text, spans)
         
@@ -172,24 +172,23 @@ class TokenLevelProbabilityProvider:
     def print_trie(self):
         """Print the structure of the trie for debugging purposes."""
         def _print_node(node, prefix="", token_id=None, depth=0):
-            # Print the current node
+            
             indent = "  " * depth
             token_text = ""
             if token_id is not None:
                 try:
-                    # Try to decode the token to see its text representation
+                    
                     token_text = f" → '{self._llm.tokenizer.decode([token_id])}'"
                 except:
                     pass
                 
             print(f"{indent}├── Token: {token_id}{token_text}")
             
-            # Print non-terminals if this is a terminal node
             if node.nts:
                 nt_indent = "  " * (depth + 1)
                 print(f"{nt_indent}└── Non-terminals: {', '.join(node.nts)}")
             
-            # Recursively print children
+            
             for token_id, child in sorted(node.children.items()):
                 _print_node(child, prefix + "  ", token_id, depth + 1)
         
