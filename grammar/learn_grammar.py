@@ -102,13 +102,23 @@ for prod, count in prod_counts.items():
 
 
 for lhs_str, expansions in rules_by_lhs.items():
-    
+
     if lhs_str == start_symbol and lhs_str == "ROOT":
         continue
-    if len(expansions) == 1:
-        grammar_lines.append(f"{lhs_str} -> {expansions[0]}")
+
+    filtered = []
+    for exp in expansions:
+        rhs_symbol = exp.split(" [")[0].strip()
+        if not (len(rhs_symbol.split()) == 1 and rhs_symbol == lhs_str):
+            filtered.append(exp)
+
+    if not filtered:
+        continue
+
+    if len(filtered) == 1:
+        grammar_lines.append(f"{lhs_str} -> {filtered[0]}")
     else:
-        grammar_lines.append(f"{lhs_str} -> " + " | ".join(expansions))
+        grammar_lines.append(f"{lhs_str} -> " + " | ".join(filtered))
 
 
 

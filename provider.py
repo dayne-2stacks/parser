@@ -52,7 +52,12 @@ class TokenLevelProbabilityProvider:
         # correctly when querying the model.
         self._nt_token_seqs = self._map_nonterminals_to_token_seqs()
         self._trie = self._build_trie()
+        try:
+            self._space_token_id = self._llm.tokenizer.encode(" ", add_special_tokens=False)[0]
+        except Exception:
+            self._space_token_id = None
 
+        
     def _map_nonterminals_to_token_seqs(self) -> Dict[str, List[int]]:
         """Map non-terminals to their corresponding token id sequences."""
         nt_token_ids: Dict[str, List[int]] = {}
@@ -107,7 +112,11 @@ class TokenLevelProbabilityProvider:
             for nt, v in sub_nodes.items():
                 results[nt] = results.get(nt, 0.0) + v
 
-        leftover = max(1.0 - total_child_prob, 0.0)
+        if self._space_token_id is not None:
+            leftover = token_probs[self._space_token_id].item()
+        else:
+            leftover = max(1.0 - total_child_prob, 0.0)
+
         for nt in node.nts:
             results[nt] = results.get(nt, 0.0) + prob * leftover
 
@@ -120,14 +129,18 @@ class TokenLevelProbabilityProvider:
         Get probabilities of nonterminals for each text span.
         """
         result = {}
-        
+        history: Dict[Tuple[int, int], str] = {}
+
         for start, end in spans:
             span_text = text.split()[start:end]
             span_str = " ".join(span_text)
-            
-            
+
+            context_parts = [f"{s}:{e}->{cat}" for (s, e), cat in history.items()]
+            context_str = "; ".join(context_parts)
+
             prompt = (
                 f"Given the possible nonterminal symbols {', '.join(self._nonterminals)}, "
+                f"previously recognised spans: {context_str}. "
                 "Using the nonterminal symbols of the Penn Treebank corpus, "
                 f"the phrase '{span_str}' in the text '{text}' forms the "
                 f"syntactic category of"
@@ -147,6 +160,9 @@ class TokenLevelProbabilityProvider:
             print(f"Top 5 candidates for span '{span_str}': {topk_results}")
 
             result[(start, end)] = span_probs
+            if span_probs:
+                best_nt = max(span_probs.items(), key=lambda x: x[1])[0]
+                history[(start, end)] = best_nt.symbol()
             provider_logger.info(
                 f"Span: {span_text} probabilities: {span_probs}"
             )
@@ -162,7 +178,12 @@ class TokenLevelProbabilityProvider:
         n = len(tokens)
         
         # Generate all possible spans
-        spans += [(start, start+length) for length in range(1,n+1) for start in range(n-length+1)]
+        spans: List[Tuple[int, int]] = [
+            (start, start + length)
+            for length in range(1, n + 1)
+            for start in range(n - length + 1)
+        ]
+        spans.sort(key=lambda s: (s[1] - s[0], s[0]))
 
         # Get span probabilities from LLM
         self._span_probs = self.get_span_probabilities(self._text, spans)

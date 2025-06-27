@@ -17,11 +17,13 @@ PRETRAINED_TOKENIZERS = {
     "llama3_1-70b": "meta-llama/Llama-3.1-70B-Instruct",
     "mistral": "mistralai/Mistral-7B-Instruct-v0.3",
     "mistral-nemo": "mistralai/Mistral-Nemo-Instruct-2407",
-    "gemma2-27b": "google/gemma-2-27b-it"
+    "gemma2-27b": "google/gemma-2-27b-it",
+    "mistral": "mistralai/Mistral-7B-Instruct-v0.3",
 }
 
 HF_MODEL_NAME_MAP = {
-    "llama3_1-70b": "meta-llama/Llama-3.1-70B-Instruct"
+    "llama3_1-70b": "meta-llama/Llama-3.1-70B-Instruct",
+    "mistral": "mistralai/Mistral-7B-Instruct-v0.3",
 }
 
 SAVE_LOCAL_MODELS_DIR = Path(f"{HOME_DIR}/local_llms/models/")
