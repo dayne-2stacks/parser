@@ -125,31 +125,55 @@ class TokenLevelViterbiParser(ViterbiParser):
         self._theta = theta
         if not 0.0 <= theta <= 1.0:
             raise ValueError("Theta must be in [0, 1]")
+
+        # Index lexical productions for quick lookup
+        self._lexical_index: Dict[str, List[Production]] = defaultdict(list)
+        for prod in grammar.productions():
+            if len(prod.rhs()) == 1 and isinstance(prod.rhs()[0], str):
+                self._lexical_index[prod.rhs()[0]].append(prod)
         
     def parse(self, tokens):
         
         tokens = list(tokens)
-        self._grammar.check_coverage(tokens)
-        
+
+        # Only enforce full coverage if theta==1.0 (pure grammar)
+        if self._theta == 1.0:
+            self._grammar.check_coverage(tokens)
+
         span_probs = self._token_provider.set_text_and_precompute(tokens)
-        
+
         self.current_tokens = tokens
-        
+
         constituents = {}
-        
+
         if self._trace:
             print("Inserting tookens into the most likely constituents table")
-            
+
         for index in range(len(tokens)):
             token = tokens[index]
             if self._trace:
                 print(f"Token: {token}")
-            constituents[index, index+1, token] = token
-            # constituent_logger.info(
-            #     f"Inserting token '{token}' at index {index} into constituents table."
-            # )
+            constituents[index, index + 1, token] = token
             if self._trace > 1:
                 self._trace_lexical_insertion(token, index, len(tokens))
+
+            # Grammar lexical productions for this token
+            grammar_prods = self._lexical_index.get(token, [])
+            llm_probs = span_probs.get((index, index + 1), {})
+
+            for prod in grammar_prods:
+                g_prob = prod.prob()
+                llm_prob = llm_probs.get(prod.lhs(), 0.0)
+                prob = self._theta * g_prob + (1.0 - self._theta) * llm_prob
+                tree = ProbabilisticTree(prod.lhs().symbol(), [token], prob=prob)
+                constituents[index, index + 1, prod.lhs()] = tree
+
+            # Add LLM-only categories for tokens unseen in grammar
+            if not grammar_prods:
+                for nt, lprob in llm_probs.items():
+                    prob = (1.0 - self._theta) * lprob
+                    tree = ProbabilisticTree(nt.symbol(), [token], prob=prob)
+                    constituents[index, index + 1, nt] = tree
                 
         
         for length in range(1, len(tokens) +1):
