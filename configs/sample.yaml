@@ -1,8 +1,11 @@
 data_score:
+  - 0.0
   - 0.2
   - 0.4
   - 0.6
   - 0.8
+  - 1.0
 model:
   - llama3_1-70b
-  - gemma3-27b
+  - mistral
+  - gemma2-27b
