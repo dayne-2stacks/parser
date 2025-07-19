@@ -5,6 +5,7 @@ from typing import Dict, Any, List
 import torch
 import yaml
 import nltk
+import logging
 from collections import defaultdict
 from nltk import Nonterminal, induce_pcfg, ProbabilisticProduction, Production
 from nltk.tree import Tree
@@ -15,6 +16,13 @@ from nltk.tokenize import TreebankWordTokenizer
 from local_llm import LocalLLM
 import matplotlib.pyplot as plt
 import os
+
+os.makedirs("logs", exist_ok=True)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("hyperparam_search")
+handler = logging.FileHandler("logs/hyperparam_search.log")
+handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+logger.addHandler(handler)
 
 
 def get_constituents(tree: Tree) -> set:
@@ -116,7 +124,7 @@ def evaluate(parser: ViterbiParser, dev_trees: List[Tree], *, theta: float, voca
     for gold in dev_trees:
         sent = gold.leaves()
         tokens = TreebankWordTokenizer().tokenize(" ".join(sent))
-        print(f"Evaluating sentence: {' '.join(sent)}")
+        logger.info("Evaluating sentence: %s", ' '.join(sent))
 
         if theta == 1.0 and any(w not in vocab for w in tokens):
             total_time += 0.0
@@ -125,9 +133,9 @@ def evaluate(parser: ViterbiParser, dev_trees: List[Tree], *, theta: float, voca
         t0 = time.perf_counter()
         try:
             parsed = next(parser.parse(tokens))
-            print(f"Parsed: {parsed}")
+            logger.debug("Parsed tree: %s", parsed)
         except:
-            print("Parsing failed")
+            logger.warning("Parsing failed")
             parsed = None
         total_time += time.perf_counter() - t0
 
@@ -177,7 +185,7 @@ def main(cfg_path: str):
     nts = {str(p.lhs()) for p in grammar.productions()}
 
     for theta, model_name in itertools.product(config["data_score"], config["model"]):
-        print(theta)
+        logger.info("Running evaluation with theta=%s, model=%s", theta, model_name)
 
         if theta == 1.0:
             parser = ViterbiParser(grammar)
@@ -207,9 +215,15 @@ def main(cfg_path: str):
                 "f1": f1,
             }
         )
-        print(f"Results for theta={theta}, model={model_name}:")
-        print(
-            f"Accuracy: {acc:.4f}, Avg Inference Time: {avg_time:.4f}s, Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}"
+        logger.info(
+            "Results for theta=%s, model=%s: accuracy=%.4f, avg_time=%.4fs, precision=%.4f, recall=%.4f, f1=%.4f",
+            theta,
+            model_name,
+            acc,
+            avg_time,
+            precision,
+            recall,
+            f1,
         )
 
         # Add a second plot for F1 scores

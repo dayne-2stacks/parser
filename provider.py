@@ -1,12 +1,15 @@
 from __future__ import annotations
 from typing import List, Dict, Tuple, Set, Optional
 import logging
+import os
 from nltk.grammar import Nonterminal
 import torch
 from torch.nn import functional as F
 
 from local_llm import LocalLLM
 from dataclasses import dataclass, field
+
+os.makedirs("logs", exist_ok=True)
 
 # Logger for provider events
 provider_logger = logging.getLogger("provider")
@@ -158,6 +161,9 @@ class TokenLevelProbabilityProvider:
             sorted_probs = sorted(span_probs.items(), key=lambda x: x[1], reverse=True)[:5]
             topk_results = [(nt.symbol(), p) for nt, p in sorted_probs]
             print(f"Top 5 candidates for span '{span_str}': {topk_results}")
+            provider_logger.info(
+                f"Top candidates for span '{span_str}': {topk_results}"
+            )
 
             result[(start, end)] = span_probs
             if span_probs:
