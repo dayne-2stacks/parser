@@ -2,7 +2,7 @@ import itertools
 import json
 import time
 from typing import Dict, Any, List
-
+import torch
 import yaml
 import nltk
 from collections import defaultdict
@@ -11,13 +11,33 @@ from nltk.tree import Tree
 from nltk.parse import ViterbiParser
 from viterbi import TokenLevelViterbiParser
 from provider import TokenLevelProbabilityProvider
+from nltk.tokenize import TreebankWordTokenizer
 from local_llm import LocalLLM
 import matplotlib.pyplot as plt
 import os
 
+def get_constituents(tree: Tree) -> set:
+    
+    constituents = set()
+    leaves_pos = {}
+    
+    leaves = tree.leaves()
+    for i, leaf in enumerate(leaves):
+        for pos in tree.leaf_treepositions(i):
+            leaves_pos[pos] = i
+            
+    for position in tree.treepositions():
+        if isinstance(tree[position], Tree):
+            if len(tree[position].leaves())> 1:
+                subtree = tree[position]
+                start = leaves_pos[subtree.leaf_treeposition(0)]
+                end = leaves_pos[subtree.leaf_treeposition(len(subtree.leaves())-1)] + 1
+                label = subtree.label()
+                constituents.add((label, start, end))
+    return constituents
 
 def load_config(path: str) -> Dict[str, List[Any]]:
-    """Load YAML or JSON configuration describing hyperparameters."""
+    """ Load a config file in either JSON or YAML"""
     with open(path, 'r') as f:
         if path.endswith('.json'):
             data = json.load(f)
@@ -26,17 +46,18 @@ def load_config(path: str) -> Dict[str, List[Any]]:
     return data
 
 
-def get_treebank_splits(dev_ratio: float = 0.1):
-    """Return training and development splits of the Penn Treebank."""
+def get_treebank_splits(dev_ratio: float = 0.1, test_ratio: float = 0.1) -> (List[Tree], List[Tree], List[Tree]):
+    """ Get train, dev and test splits of the NLTK Treebank corpus """
+    # Get all the trees from the NLTK Treebank corpus
     trees = list(nltk.corpus.treebank.parsed_sents())
-    split = int(len(trees) * (1 - dev_ratio))
-    train_trees = trees[:split]
-    dev_trees = trees[split:]
-    return train_trees, dev_trees
+    split_dev = int(len(trees) * (1 - dev_ratio - test_ratio))
+    train_trees = trees[:split_dev]
+    dev_trees = trees[split_dev:-int(len(trees) * test_ratio)] if test_ratio else trees[split_dev:]
+    test_trees = trees[-int(len(trees) * test_ratio):] if test_ratio else []
+    return train_trees, dev_trees, test_trees
 
 
 def build_pcfg(train_trees: List[Tree]):
-    """Induce a PCFG using logic from ``grammar/learn_grammar.py``."""
     productions = []
     root_counts = defaultdict(int)
 
@@ -59,35 +80,63 @@ def build_pcfg(train_trees: List[Tree]):
 
 
 def evaluate(parser: ViterbiParser, dev_trees: List[Tree], *, theta: float, vocab: set):
-    """Evaluate parser accuracy and inference time on development trees."""
     correct = 0
     total_time = 0.0
+    total_gold_constituents = 0
+    total_pred_constituents = 0
+    total_correct_constituents = 0
+    
     for gold in dev_trees:
         sent = gold.leaves()
-
-        # If we rely purely on the grammar and an unknown word is present,
-        # treat as an inaccurate parse without attempting to parse.
-        if theta == 1.0 and any(w not in vocab for w in sent):
+        tokens = TreebankWordTokenizer().tokenize(' '.join(sent))
+        print(f"Evaluating sentence: {' '.join(sent)}")
+        
+        if theta == 1.0 and any(w not in vocab for w in tokens):
             total_time += 0.0
             continue
-
+            
         t0 = time.perf_counter()
         try:
-            parsed = next(parser.parse(sent))
-        except (StopIteration, ValueError):
+            parsed = next(parser.parse(tokens))
+            print(f"Parsed: {parsed}")
+        except:
+            print("Parsing failed")
             parsed = None
         total_time += time.perf_counter() - t0
+        
+        # Exact match
         if parsed and parsed == gold:
             correct += 1
+        
+        # F1 calculation
+        if parsed:
+            gold_constituents = get_constituents(gold)
+            pred_constituents = get_constituents(parsed)
+            
+            correct_constituents = gold_constituents.intersection(pred_constituents)
+            
+            total_gold_constituents += len(gold_constituents)
+            total_pred_constituents += len(pred_constituents)
+            total_correct_constituents += len(correct_constituents)
+    
+    # Calculate metrics
     acc = correct / len(dev_trees)
     avg_time = total_time / len(dev_trees)
-    return acc, avg_time
+    
+    precision = total_correct_constituents / total_pred_constituents if total_pred_constituents > 0 else 0
+    recall = total_correct_constituents / total_gold_constituents if total_gold_constituents > 0 else 0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+    
+    return acc, avg_time, precision, recall, f1
 
 
 def main(cfg_path: str):
     config = load_config(cfg_path)
-    train_trees, dev_trees = get_treebank_splits()
+    train_trees, dev_trees, test_trees = get_treebank_splits()
     grammar = build_pcfg(train_trees)
+
+    # Ensure results directory exists
+    os.makedirs('results', exist_ok=True)
 
     lexical_vocab = {
         prod.rhs()[0]
@@ -96,42 +145,62 @@ def main(cfg_path: str):
     }
 
     results = []
+    current_model = None
+    llm = None
+    provider = None
+    
+    nts = {str(p.lhs()) for p in grammar.productions()}
+    
     for theta, model_name in itertools.product(config['data_score'], config['model']):
+        print(theta)
+        
         if theta == 1.0:
             parser = ViterbiParser(grammar)
         else:
-            llm = LocalLLM(model_name=model_name)
-            nts = {str(p.lhs()) for p in grammar.productions()}
-            provider = TokenLevelProbabilityProvider(llm, nts)
+            # Check if model has changed
+            if model_name != current_model:
+                if llm is not None:
+                    del llm
+                    torch.cuda.empty_cache()
+                # Create new LLM instance and provider
+                llm = LocalLLM(model_name=model_name)
+                provider = TokenLevelProbabilityProvider(llm, nts)
+                current_model = model_name
+            
+            # Use existing provider when model hasn't changed
             parser = TokenLevelViterbiParser(grammar, provider, theta=theta)
 
-        acc, avg_time = evaluate(parser, dev_trees, theta=theta, vocab=lexical_vocab)
-        results.append({'data_score': theta, 'model': model_name,
-                        'accuracy': acc, 'avg_inference_time': avg_time})
+        acc, avg_time, precision, recall, f1 = evaluate(parser, dev_trees, theta=theta, vocab=lexical_vocab)
+        results.append({
+            'data_score': theta, 
+            'model': model_name,
+            'accuracy': acc, 
+            'avg_inference_time': avg_time,
+            'precision': precision,
+            'recall': recall,
+            'f1': f1
+        })
+        print(f"Results for theta={theta}, model={model_name}:")
+        print(f"Accuracy: {acc:.4f}, Avg Inference Time: {avg_time:.4f}s, Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}")
 
-    os.makedirs('results', exist_ok=True)
-    with open('results/results.json', 'w') as f:
-        json.dump(results, f, indent=2)
+        # Add a second plot for F1 scores
+        plt.figure()
+        for model in set(r['model'] for r in results):
+            vals = sorted([r for r in results if r['model'] == model], key=lambda x: x['data_score'])
+            thetas = [r['data_score'] for r in vals]
+            f1_scores = [r['f1'] for r in vals]
+            plt.plot(thetas, f1_scores, marker='o', label=model)
 
-    for model in set(r['model'] for r in results):
-        vals = sorted(
-            [r for r in results if r['model'] == model], key=lambda x: x['data_score']
-        )
-        thetas = [r['data_score'] for r in vals]
-        accs = [r['accuracy'] for r in vals]
-        plt.plot(thetas, accs, marker='o', label=model)
-
-    plt.xlabel('theta')
-    plt.ylabel('accuracy')
-    plt.legend()
-    plt.savefig('results/accuracy.png')
-    plt.close()
+        plt.xlabel('theta')
+        plt.ylabel('F1 Score')
+        plt.legend()
+        plt.savefig('results/f1_scores.png')
 
 
 if __name__ == '__main__':
     import argparse
     nltk.download('treebank')
     parser = argparse.ArgumentParser(description='Hyperparameter search for parsing')
-    parser.add_argument('--config', help='Path to YAML/JSON config file', default='configs/sample.yaml')
+    parser.add_argument('--config', help='Path to YAML config file', default='configs/sample.yaml')
     args = parser.parse_args()
     main(args.config)
