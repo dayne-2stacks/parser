@@ -132,7 +132,7 @@ def evaluate(parser: ViterbiParser, dev_trees: List[Tree], *, theta: float, voca
 
         t0 = time.perf_counter()
         try:
-            parsed = next(parser.parse(tokens))
+            parsed = list(parser.parse(tokens))
             logger.debug("Parsed tree: %s", parsed)
         except:
             logger.warning("Parsing failed")
@@ -140,7 +140,7 @@ def evaluate(parser: ViterbiParser, dev_trees: List[Tree], *, theta: float, voca
         total_time += time.perf_counter() - t0
 
         # Exact match
-        if parsed and parsed == gold:
+        if parsed and parsed == list(gold):
             correct += 1
 
         # F1 calculation
