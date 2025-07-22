@@ -201,7 +201,7 @@ def main(cfg_path: str):
                 provider = TokenLevelProbabilityProvider(llm, nts)
                 current_model = model_name
 
-            # Use existing provider when model hasn't changed
+            # When model hasnt changed
             parser = TokenLevelViterbiParser(grammar, provider, theta=theta)
 
         acc, avg_time, precision, recall, f1 = evaluate(parser, dev_trees, theta=theta, vocab=lexical_vocab)
