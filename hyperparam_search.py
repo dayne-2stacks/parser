@@ -134,8 +134,9 @@ def evaluate(parser: ViterbiParser, dev_trees: List[Tree], *, theta: float, voca
         try:
             parsed = list(parser.parse(tokens))
             logger.debug("Parsed tree: %s", parsed)
-        except:
-            logger.warning("Parsing failed")
+        except Exception:
+            logger.error("An error occurred", exc_info=True)
+            # logger.warning("Parsing failed")
             parsed = None
         total_time += time.perf_counter() - t0
 
