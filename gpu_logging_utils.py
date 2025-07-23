@@ -12,13 +12,16 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 if not logger.handlers:
-    handler = logging.StreamHandler()
+    # handler = logging.StreamHandler()
     formatter = logging.Formatter(
         fmt='%(asctime)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+    # handler.setFormatter(formatter)
+    # logger.addHandler(handler)
+    file_handler = logging.FileHandler("logs/gpu.log")
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
     logger.setLevel(logging.INFO)
 
 def log_gpu_memory_nvidia_smi(message: str = "") -> None:

@@ -4,6 +4,11 @@ from typing import List, Dict, Any, Tuple, Sequence, Iterable
 from nltk.grammar import Nonterminal, PCFG, ProbabilisticProduction as Production
 from collections import defaultdict
 from provider import  TokenLevelProbabilityProvider
+from gpu_logging_utils import (
+    log_gpu_memory_nvidia_smi,
+    log_cuda_memory_pytorch,
+    flush_cuda_cache,
+)
 from nltk.parse.viterbi import ViterbiParser
 from nltk.tree import Tree, ProbabilisticTree
 import math
@@ -104,10 +109,13 @@ class InterpolatingPhraseViterbiParser(ViterbiParser):
 
 
     def parse(self, tokens: Iterable[str]):
-
+        log_gpu_memory_nvidia_smi("phrase_parser_start")
+        log_cuda_memory_pytorch("phrase_parser_start")
         for tree in super().parse(tokens):
             phrases = [" ".join(t.leaves()) for t in tree.subtrees()]
             yield tree, phrases
+        log_gpu_memory_nvidia_smi("phrase_parser_end")
+        log_cuda_memory_pytorch("phrase_parser_end")
             
             
 class TokenLevelViterbiParser(ViterbiParser):
@@ -133,7 +141,8 @@ class TokenLevelViterbiParser(ViterbiParser):
                 self._lexical_index[prod.rhs()[0]].append(prod)
         
     def parse(self, tokens):
-        
+        log_gpu_memory_nvidia_smi("viterbi_parse_start")
+        log_cuda_memory_pytorch("viterbi_parse_start")
         tokens = list(tokens)
 
         # Only enforce full coverage if theta==1.0 (pure grammar)
@@ -141,6 +150,8 @@ class TokenLevelViterbiParser(ViterbiParser):
             self._grammar.check_coverage(tokens)
 
         span_probs = self._token_provider.set_text_and_precompute(tokens)
+        log_gpu_memory_nvidia_smi("after_precompute")
+        log_cuda_memory_pytorch("after_precompute")
 
         self.current_tokens = tokens
 
@@ -156,6 +167,7 @@ class TokenLevelViterbiParser(ViterbiParser):
             constituents[index, index + 1, token] = token
             if self._trace > 1:
                 self._trace_lexical_insertion(token, index, len(tokens))
+            log_cuda_memory_pytorch(f"token_{index}")
 
             # Grammar lexical productions for this token
             grammar_prods = self._lexical_index.get(token, [])
@@ -182,6 +194,8 @@ class TokenLevelViterbiParser(ViterbiParser):
                     "Finding the most likely constituents"
                     + " spanning %d text elements..." % length
                 )
+            log_gpu_memory_nvidia_smi(f"span_length_{length}")
+            log_cuda_memory_pytorch(f"span_length_{length}")
             for start in range(len(tokens) - length + 1):
                 span = (start, start + length)
                 self._add_constituents_spanning(span, constituents, tokens)
@@ -189,12 +203,16 @@ class TokenLevelViterbiParser(ViterbiParser):
         tree = constituents.get((0, len(tokens), self._grammar.start()))
         if tree is not None:
             yield tree
+        log_gpu_memory_nvidia_smi("viterbi_parse_end")
+        log_cuda_memory_pytorch("viterbi_parse_end")
+        flush_cuda_cache()
             
     def _add_constituents_spanning(self, span, constituents, tokens):
         """
          Find constituents that might cover a span, using interpolated probabilities.
         """
-        
+        log_gpu_memory_nvidia_smi("add_constituents_start")
+        log_cuda_memory_pytorch("add_constituents_start")
         changed = True
         while changed:
             changed = False
@@ -233,11 +251,15 @@ class TokenLevelViterbiParser(ViterbiParser):
                     constituents[span[0], span[1], production.lhs()] = tree
                     constituent_logger.info(f"Inserting production '{production}' with probability {interpolated_prob:.8f} for span {span} into constituents table.")
                     changed = True
+            log_cuda_memory_pytorch(f"span_{span[0]}_{span[1]}")
+        log_gpu_memory_nvidia_smi("add_constituents_end")
+        log_cuda_memory_pytorch("add_constituents_end")
     
     def _get_llm_probability(self, production, children, span):
         """
         Get the LLM probability of a production application
         """
+        log_cuda_memory_pytorch("llm_prob_start")
         lhs = production.lhs()
         start, end = span
         
@@ -254,7 +276,9 @@ class TokenLevelViterbiParser(ViterbiParser):
                 child_prob = self._token_provider._span_probs.get(child_span, {}).get(child_lhs, 0)
                 child_probs *= child_prob
 
-        return lhs_prob * child_probs
+        result = lhs_prob * child_probs
+        log_cuda_memory_pytorch("llm_prob_end")
+        return result
 
     def _get_tree_span(self, tree, start_offset):
         """

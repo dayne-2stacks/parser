@@ -2,6 +2,11 @@ from __future__ import annotations
 from typing import List, Dict, Tuple, Set
 import logging
 import os
+from gpu_logging_utils import (
+    log_gpu_memory_nvidia_smi,
+    log_cuda_memory_pytorch,
+    flush_cuda_cache,
+)
 from nltk.grammar import Nonterminal
 import torch
 from torch.nn import functional as F
@@ -45,6 +50,8 @@ class TokenLevelProbabilityProvider:
 
         self._llm = llm
         self._nonterminals = nonterminals
+        log_gpu_memory_nvidia_smi("provider init")
+        log_cuda_memory_pytorch("provider init")
 
         # Map non-terminals to the sequence of token ids that represent them in
         # the LLM vocabulary.  Some symbols (e.g. "NP-SBJ") are tokenised into
@@ -52,6 +59,7 @@ class TokenLevelProbabilityProvider:
         # correctly when querying the model.
         self._nt_token_seqs = self._map_nonterminals_to_token_seqs()
         self._trie = self._build_trie()
+        flush_cuda_cache()
         try:
             self._space_token_id = self._llm.tokenizer.encode(
                 " ", add_special_tokens=False
@@ -62,21 +70,28 @@ class TokenLevelProbabilityProvider:
     def _map_nonterminals_to_token_seqs(self) -> Dict[str, List[int]]:
         """Map non-terminals to their corresponding token id sequences."""
         nt_token_ids: Dict[str, List[int]] = {}
+        log_gpu_memory_nvidia_smi("map_nonterminals_start")
+        log_cuda_memory_pytorch("map_nonterminals_start")
         for nt in self._nonterminals:
             # Add a space before the symbol to mimic generation from the model
             token_ids = self._llm.tokenizer.encode(f" {nt}", add_special_tokens=False)
             nt_token_ids[nt] = token_ids
             provider_logger.info(f"Non-terminal '{nt}' mapped to token IDs {token_ids}")
+            log_cuda_memory_pytorch(f"mapped {nt}")
         return nt_token_ids
 
     def _build_trie(self) -> _TrieNode:
         """Build a prefix trie of non-terminal token sequences."""
+        log_gpu_memory_nvidia_smi("build_trie_start")
+        log_cuda_memory_pytorch("build_trie_start")
         root = _TrieNode()
         for nt, seq in self._nt_token_seqs.items():
             node = root
             for tok in seq:
                 node = node.children.setdefault(tok, _TrieNode())
             node.nts.append(nt)
+            log_cuda_memory_pytorch(f"trie_nt_{nt}")
+        flush_cuda_cache()
         return root
 
     def _predict_recursive(
@@ -85,6 +100,8 @@ class TokenLevelProbabilityProvider:
         node: _TrieNode,
         prob: float,
     ) -> Dict[str, float]:
+        log_gpu_memory_nvidia_smi("predict_recursive_start")
+        log_cuda_memory_pytorch("predict_recursive_start")
         device = self._llm.model.device
         results: Dict[str, float] = {}
 
@@ -96,6 +113,7 @@ class TokenLevelProbabilityProvider:
         with torch.inference_mode():
             out = self._llm.model(context)
             logits = out.logits[0, -1, :]
+        log_cuda_memory_pytorch("after_model_call")
         token_probs = F.softmax(logits, dim=0)
 
         total_child_prob = 0.0
@@ -117,6 +135,7 @@ class TokenLevelProbabilityProvider:
         for nt in node.nts:
             results[nt] = results.get(nt, 0.0) + prob * leftover
 
+        flush_cuda_cache()
         return results
 
     def get_span_probabilities(
@@ -125,6 +144,8 @@ class TokenLevelProbabilityProvider:
         """
         Get probabilities of nonterminals for each text span.
         """
+        log_gpu_memory_nvidia_smi("get_span_probabilities_start")
+        log_cuda_memory_pytorch("get_span_probabilities_start")
         result = {}
         history: Dict[Tuple[int, int], str] = {}
 
@@ -161,12 +182,15 @@ class TokenLevelProbabilityProvider:
             provider_logger.info(
                 f"Top candidates for span '{span_str}': {topk_results}"
             )
+            log_cuda_memory_pytorch(f"span_{start}_{end}")
 
             result[(start, end)] = span_probs
             if span_probs:
                 best_nt = max(span_probs.items(), key=lambda x: x[1])[0]
                 history[(start, end)] = best_nt.symbol()
             provider_logger.info(f"Span: {span_text} probabilities: {span_probs}")
+        log_gpu_memory_nvidia_smi("get_span_probabilities_end")
+        log_cuda_memory_pytorch("get_span_probabilities_end")
         return result
 
     def set_text_and_precompute(self, tokens):
@@ -174,6 +198,8 @@ class TokenLevelProbabilityProvider:
         Set the current text being parsed and precompute span probabilities.
         This should be called before parsing.
         """
+        log_gpu_memory_nvidia_smi("set_text_start")
+        log_cuda_memory_pytorch("set_text_start")
         self._text = " ".join(tokens)
         n = len(tokens)
 
@@ -187,7 +213,8 @@ class TokenLevelProbabilityProvider:
 
         # Get span probabilities from LLM
         self._span_probs = self.get_span_probabilities(self._text, spans)
-
+        log_gpu_memory_nvidia_smi("set_text_end")
+        log_cuda_memory_pytorch("set_text_end")
         return self._span_probs
 
     def print_trie(self):

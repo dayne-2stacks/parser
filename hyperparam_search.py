@@ -12,6 +12,11 @@ from nltk.tree import Tree
 from nltk.parse import ViterbiParser
 from viterbi import TokenLevelViterbiParser
 from provider import TokenLevelProbabilityProvider
+from gpu_logging_utils import (
+    log_gpu_memory_nvidia_smi,
+    log_cuda_memory_pytorch,
+    flush_cuda_cache,
+)
 from nltk.tokenize import TreebankWordTokenizer
 from local_llm import LocalLLM
 import matplotlib.pyplot as plt
@@ -115,6 +120,8 @@ def build_pcfg(train_trees: List[Tree]):
 
 
 def evaluate(parser: ViterbiParser, dev_trees: List[Tree], *, theta: float, vocab: set):
+    log_gpu_memory_nvidia_smi("evaluate_start")
+    log_cuda_memory_pytorch("evaluate_start")
     correct = 0
     total_time = 0.0
     total_gold_constituents = 0
@@ -139,6 +146,7 @@ def evaluate(parser: ViterbiParser, dev_trees: List[Tree], *, theta: float, voca
             # logger.warning("Parsing failed")
             parsed = None
         total_time += time.perf_counter() - t0
+        log_cuda_memory_pytorch("after_parse")
 
         # Exact match
         if parsed and parsed == list(gold):
@@ -163,10 +171,15 @@ def evaluate(parser: ViterbiParser, dev_trees: List[Tree], *, theta: float, voca
     recall = total_correct_constituents / total_gold_constituents if total_gold_constituents > 0 else 0
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
 
+    log_gpu_memory_nvidia_smi("evaluate_end")
+    log_cuda_memory_pytorch("evaluate_end")
+    flush_cuda_cache()
     return acc, avg_time, precision, recall, f1
 
 
 def main(cfg_path: str):
+    log_gpu_memory_nvidia_smi("main_start")
+    log_cuda_memory_pytorch("main_start")
     config = load_config(cfg_path)
     train_trees, dev_trees, test_trees = get_treebank_splits()
     grammar = build_pcfg(train_trees)
@@ -187,6 +200,8 @@ def main(cfg_path: str):
 
     for theta, model_name in itertools.product(config["data_score"], config["model"]):
         logger.info("Running evaluation with theta=%s, model=%s", theta, model_name)
+        log_gpu_memory_nvidia_smi(f"loop_theta_{theta}_model_{model_name}")
+        log_cuda_memory_pytorch(f"loop_theta_{theta}_model_{model_name}")
 
         if theta == 1.0:
             parser = ViterbiParser(grammar)
@@ -196,6 +211,7 @@ def main(cfg_path: str):
                 if llm is not None:
                     del llm
                     torch.cuda.empty_cache()
+                    flush_cuda_cache()
                 # Create new LLM instance and provider
                 llm = LocalLLM(model_name=model_name)
                 provider = TokenLevelProbabilityProvider(llm, nts)
@@ -226,6 +242,8 @@ def main(cfg_path: str):
             recall,
             f1,
         )
+        log_cuda_memory_pytorch("after_eval")
+        flush_cuda_cache()
 
         # Add a second plot for F1 scores
         plt.figure()
@@ -239,6 +257,8 @@ def main(cfg_path: str):
         plt.ylabel("F1 Score")
         plt.legend()
         plt.savefig("results/f1_scores.png")
+    log_gpu_memory_nvidia_smi("main_end")
+    log_cuda_memory_pytorch("main_end")
 
 
 if __name__ == "__main__":
