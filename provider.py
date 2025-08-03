@@ -18,7 +18,7 @@ os.makedirs("logs", exist_ok=True)
 
 # Logger for provider events
 provider_logger = logging.getLogger("provider")
-provider_logger.setLevel(logging.INFO)
+provider_logger.setLevel(logging.WARNING)
 provider_handler = logging.FileHandler("logs/provider.log")
 provider_handler.setFormatter(
     logging.Formatter("%(asctime)s %(levelname)s %(message)s")
@@ -27,7 +27,7 @@ provider_logger.addHandler(provider_handler)
 
 # Logger for logits events
 logits_logger = logging.getLogger("logits")
-logits_logger.setLevel(logging.INFO)
+logits_logger.setLevel(logging.WARNING)
 logits_handler = logging.FileHandler("logs/logits.log")
 logits_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 logits_logger.addHandler(logits_handler)
@@ -77,20 +77,20 @@ class TokenLevelProbabilityProvider:
             token_ids = self._llm.tokenizer.encode(f" {nt}", add_special_tokens=False)
             nt_token_ids[nt] = token_ids
             provider_logger.info(f"Non-terminal '{nt}' mapped to token IDs {token_ids}")
-            log_cuda_memory_pytorch(f"mapped {nt}")
+            # log_cuda_memory_pytorch(f"mapped {nt}")
         return nt_token_ids
 
     def _build_trie(self) -> _TrieNode:
         """Build a prefix trie of non-terminal token sequences."""
-        log_gpu_memory_nvidia_smi("build_trie_start")
-        log_cuda_memory_pytorch("build_trie_start")
+        # log_gpu_memory_nvidia_smi("build_trie_start")
+        # log_cuda_memory_pytorch("build_trie_start")
         root = _TrieNode()
         for nt, seq in self._nt_token_seqs.items():
             node = root
             for tok in seq:
                 node = node.children.setdefault(tok, _TrieNode())
             node.nts.append(nt)
-            log_cuda_memory_pytorch(f"trie_nt_{nt}")
+            # log_cuda_memory_pytorch(f"trie_nt_{nt}")
         flush_cuda_cache()
         return root
 
@@ -109,10 +109,11 @@ class TokenLevelProbabilityProvider:
             for nt in node.nts:
                 results[nt] = results.get(nt, 0.0) + prob
             return results
+        log_cuda_memory_pytorch("before_model_call")
 
-        with torch.inference_mode():
-            out = self._llm.model(context)
-            logits = out.logits[0, -1, :]
+        # with torch.inference_mode():
+        out = self._llm.model(context)
+        logits = out.logits[0, -1, :]
         log_cuda_memory_pytorch("after_model_call")
         token_probs = F.softmax(logits, dim=0)
 
@@ -123,6 +124,14 @@ class TokenLevelProbabilityProvider:
                 continue
             total_child_prob += p
             new_ctx = torch.cat([context, torch.tensor([[tok]], device=device)], dim=1)
+            print(
+                f"new_ctx shape: {new_ctx.shape}, "
+                f"memory: {new_ctx.numel() * new_ctx.element_size() / (1024 * 1024):.4f} MB"
+            )
+            logits_logger.info("New context shape and memory usage:", {
+                "shape": new_ctx.shape,
+                "memory": new_ctx.numel() * new_ctx.element_size() / (1024 * 1024)
+            })
             sub_nodes = self._predict_recursive(new_ctx, child, prob * p)
             for nt, v in sub_nodes.items():
                 results[nt] = results.get(nt, 0.0) + v

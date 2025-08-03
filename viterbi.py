@@ -20,7 +20,7 @@ LOGGER.addHandler(logging.NullHandler())
 
 # Logger for provider events
 constituent_logger = logging.getLogger("constituent")
-constituent_logger.setLevel(logging.INFO)
+constituent_logger.setLevel(logging.WARNING)
 constituent_handler = logging.FileHandler("logs/constituent.log")
 constituent_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
 constituent_logger.addHandler(constituent_handler)

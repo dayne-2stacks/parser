@@ -26,16 +26,17 @@ if not logger.handlers:
 
 def log_gpu_memory_nvidia_smi(message: str = "") -> None:
     """Log GPU memory usage using nvidia-smi."""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-    try:
-        result = subprocess.run(
-            ['nvidia-smi', '--query-gpu=memory.used,memory.total', '--format=csv,nounits,noheader'],
-            capture_output=True, text=True, check=True
-        )
-        used, total = result.stdout.strip().split(',')
-        logger.info(f"[{timestamp}] GPU Memory {message}: Used={used.strip()}MB, Total={total.strip()}MB")
-    except Exception as e:
-        logger.warning(f"[{timestamp}] Unable to query GPU memory with nvidia-smi: {e}")
+    pass
+    # timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+    # try:
+    #     result = subprocess.run(
+    #         ['nvidia-smi', '--query-gpu=memory.used,memory.total', '--format=csv,nounits,noheader'],
+    #         capture_output=True, text=True, check=True
+    #     )
+    #     used, total = result.stdout.strip().split(',')
+    #     logger.info(f"[{timestamp}] GPU Memory {message}: Used={used.strip()}MB, Total={total.strip()}MB")
+    # except Exception as e:
+    #     logger.warning(f"[{timestamp}] Unable to query GPU memory with nvidia-smi: {e}")
 
 def log_cuda_memory_pytorch(message: str = "") -> None:
     """Log GPU memory usage using PyTorch if available."""
@@ -44,12 +45,13 @@ def log_cuda_memory_pytorch(message: str = "") -> None:
         logger.info(f"[{timestamp}] CUDA not available. {message}")
         return
     try:
-        total, reserved = torch.cuda.mem_get_info()
-        used = reserved / (1024**2)
-        total_mb = total / (1024**2)
-        free = total_mb - used
+        free, total = torch.cuda.mem_get_info()
+        used = total - free
+        used_mb = used / (1024 ** 2)
+        free_mb = free / (1024 ** 2)
+        total_mb = total / (1024 ** 2)
         logger.info(
-            f"[{timestamp}] CUDA Memory {message}: Used={used:.2f}MB, Free={free:.2f}MB, Total={total_mb:.2f}MB"
+            f"[{timestamp}] CUDA Memory {message}: Used={used_mb:.2f}MB, Free={free_mb:.2f}MB, Total={total_mb:.2f}MB"
         )
     except Exception as e:
         logger.warning(f"[{timestamp}] Error querying CUDA memory: {e}")

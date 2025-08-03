@@ -162,6 +162,9 @@ def evaluate(parser: ViterbiParser, dev_trees: List[Tree], *, theta: float, voca
             total_gold_constituents += len(gold_constituents)
             total_pred_constituents += len(pred_constituents)
             total_correct_constituents += len(correct_constituents)
+        log_gpu_memory_nvidia_smi("sentence_end")
+        log_cuda_memory_pytorch("sentence_end")
+        flush_cuda_cache()  
 
     # Calculate metrics
     acc = correct / len(dev_trees)
