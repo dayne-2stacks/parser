@@ -37,7 +37,7 @@ def get_constituents(tree: Tree) -> set:
 
     leaves = tree.leaves()
     for i, leaf in enumerate(leaves):
-        for pos in tree.leaf_treepositions(i):
+        for pos in tree.leaf_treeposition(i):
             leaves_pos[pos] = i
 
     for position in tree.treepositions():

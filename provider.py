@@ -99,8 +99,17 @@ class TokenLevelProbabilityProvider:
         context: torch.Tensor,
         node: _TrieNode,
         prob: float,
+        depth: int = 0,
+        result_cache: Dict[Tuple[int, Tuple[int, ...]], Dict[str, float]] = None
     ) -> Dict[str, float]:
-        log_gpu_memory_nvidia_smi("predict_recursive_start")
+        if result_cache is None:
+            result_cache = {}
+        
+        # Create a cache key from the last token ID and current node's children keys
+        cache_key = (context[0, -1].item(), tuple(sorted(node.children.keys())))
+        if cache_key in result_cache:
+            return {k: v * prob for k, v in result_cache[cache_key].items()}
+        
         log_cuda_memory_pytorch("predict_recursive_start")
         device = self._llm.model.device
         results: Dict[str, float] = {}
@@ -109,32 +118,53 @@ class TokenLevelProbabilityProvider:
             for nt in node.nts:
                 results[nt] = results.get(nt, 0.0) + prob
             return results
+        
         log_cuda_memory_pytorch("before_model_call")
-
-        # with torch.inference_mode():
+        print(
+            f"ctx shape: {context.shape}, "
+            f"memory: {context.numel() * context.element_size() / (1024 * 1024):.4f} MB"
+        )
+        
         out = self._llm.model(context)
         logits = out.logits[0, -1, :]
         log_cuda_memory_pytorch("after_model_call")
         token_probs = F.softmax(logits, dim=0)
 
+        # Free memory after getting token probabilities
+        del out
+        if depth % 3 == 0:  # Flush cache every 3 levels of recursion
+            flush_cuda_cache()
+
         total_child_prob = 0.0
-        for tok, child in node.children.items():
-            p = token_probs[tok].item()
-            if p <= 0:
-                continue
-            total_child_prob += p
-            new_ctx = torch.cat([context, torch.tensor([[tok]], device=device)], dim=1)
-            print(
-                f"new_ctx shape: {new_ctx.shape}, "
-                f"memory: {new_ctx.numel() * new_ctx.element_size() / (1024 * 1024):.4f} MB"
-            )
-            logits_logger.info("New context shape and memory usage:", {
-                "shape": new_ctx.shape,
-                "memory": new_ctx.numel() * new_ctx.element_size() / (1024 * 1024)
-            })
-            sub_nodes = self._predict_recursive(new_ctx, child, prob * p)
-            for nt, v in sub_nodes.items():
-                results[nt] = results.get(nt, 0.0) + v
+        # Process children in batches to manage memory
+        batch_size = 5  # Adjust based on your GPU memory
+        child_items = list(node.children.items())
+        
+        for batch_idx in range(0, len(child_items), batch_size):
+            batch = child_items[batch_idx:batch_idx + batch_size]
+            
+            for tok, child in batch:
+                p = token_probs[tok].item()
+                if p <= 0:
+                    continue
+                total_child_prob += p
+                
+                # Create new context tensor
+                new_ctx = torch.cat([context, torch.tensor([[tok]], device=device)], dim=1)
+                
+                
+                # Recursive call with depth tracking
+                sub_nodes = self._predict_recursive(new_ctx, child, prob * p, depth + 1, result_cache)
+                
+                # Update results
+                for nt, v in sub_nodes.items():
+                    results[nt] = results.get(nt, 0.0) + v
+                
+                # Free memory
+                del new_ctx
+            
+            # Flush cache after each batch
+            flush_cuda_cache()
 
         if self._space_token_id is not None:
             leftover = token_probs[self._space_token_id].item()
@@ -143,8 +173,11 @@ class TokenLevelProbabilityProvider:
 
         for nt in node.nts:
             results[nt] = results.get(nt, 0.0) + prob * leftover
-
-        flush_cuda_cache()
+        
+        # Cache the normalized results (without the prob multiplier)
+        if prob > 0:
+            result_cache[cache_key] = {k: v/prob for k, v in results.items()}
+        
         return results
 
     def get_span_probabilities(

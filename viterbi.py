@@ -20,7 +20,7 @@ LOGGER.addHandler(logging.NullHandler())
 
 # Logger for provider events
 constituent_logger = logging.getLogger("constituent")
-constituent_logger.setLevel(logging.WARNING)
+constituent_logger.setLevel(logging.INFO)
 constituent_handler = logging.FileHandler("logs/constituent.log")
 constituent_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
 constituent_logger.addHandler(constituent_handler)
@@ -34,6 +34,9 @@ constituent_logger.addHandler(constituent_handler)
     
 
 class _Interpolator:
+    """
+    Base Interpolator class for building a new PCFG with interpolated probabilities. No longer used, but kept for reference.
+    """
     def __init__(
         self,
         grammar:PCFG,
@@ -89,7 +92,9 @@ class _Interpolator:
         return PCFG(self._g.start(), new_prods)
 
 class InterpolatingPhraseViterbiParser(ViterbiParser):
-
+    """
+    No longer used, but kept for reference.
+    """
     def __init__(
         self,
         grammar: PCFG,
@@ -119,7 +124,9 @@ class InterpolatingPhraseViterbiParser(ViterbiParser):
             
             
 class TokenLevelViterbiParser(ViterbiParser):
-    
+    """
+    Token-level Viterbi parser that incorporates token-level probabilities.
+    """
     def __init__(
         self,
         grammar: PCFG,
@@ -134,7 +141,7 @@ class TokenLevelViterbiParser(ViterbiParser):
         if not 0.0 <= theta <= 1.0:
             raise ValueError("Theta must be in [0, 1]")
 
-        # Index lexical productions for quick lookup
+        # dictionary that maps each terminal token in the grammar to the set of productions that can yield that token
         self._lexical_index: Dict[str, List[Production]] = defaultdict(list)
         for prod in grammar.productions():
             if len(prod.rhs()) == 1 and isinstance(prod.rhs()[0], str):
@@ -145,10 +152,11 @@ class TokenLevelViterbiParser(ViterbiParser):
         log_cuda_memory_pytorch("viterbi_parse_start")
         tokens = list(tokens)
 
-        # Only enforce full coverage if theta==1.0 (pure grammar)
+        # Only enforce full coverage if theta==1.0 (pure grammar approach)
         if self._theta == 1.0:
             self._grammar.check_coverage(tokens)
 
+        # Add the text that are being parsed and precompute token-level probabilities
         span_probs = self._token_provider.set_text_and_precompute(tokens)
         log_gpu_memory_nvidia_smi("after_precompute")
         log_cuda_memory_pytorch("after_precompute")
@@ -158,8 +166,9 @@ class TokenLevelViterbiParser(ViterbiParser):
         constituents = {}
 
         if self._trace:
-            print("Inserting tookens into the most likely constituents table")
-
+            print("Inserting tokens into the most likely constituents table")
+        
+        
         for index in range(len(tokens)):
             token = tokens[index]
             if self._trace:
@@ -169,7 +178,7 @@ class TokenLevelViterbiParser(ViterbiParser):
                 self._trace_lexical_insertion(token, index, len(tokens))
             log_cuda_memory_pytorch(f"token_{index}")
 
-            # Grammar lexical productions for this token
+            # Productions for this token
             grammar_prods = self._lexical_index.get(token, [])
             llm_probs = span_probs.get((index, index + 1), {})
 
@@ -180,7 +189,7 @@ class TokenLevelViterbiParser(ViterbiParser):
                 tree = ProbabilisticTree(prod.lhs().symbol(), [token], prob=prob)
                 constituents[index, index + 1, prod.lhs()] = tree
 
-            # Add LLM-only categories for tokens unseen in grammar
+            # Add LLM-only categories for tokens not in grammar
             if not grammar_prods:
                 for nt, lprob in llm_probs.items():
                     prob = (1.0 - self._theta) * lprob

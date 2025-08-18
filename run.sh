@@ -5,6 +5,7 @@
 #SBATCH --mail-user=dayneguy@usf.edu 
 
 #SBATCH --output=/home/d/dayneguy/gaivi_output/parser.%j 
+#SBATCH -e=/home/d/dayneguy/gaivi_output/parser-err.%j
 
 #SBATCH --gpus=4
 
