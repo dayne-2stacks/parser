@@ -120,10 +120,10 @@ class TokenLevelProbabilityProvider:
             return results
         
         log_cuda_memory_pytorch("before_model_call")
-        print(
-            f"ctx shape: {context.shape}, "
-            f"memory: {context.numel() * context.element_size() / (1024 * 1024):.4f} MB"
-        )
+        # print(
+        #     f"ctx shape: {context.shape}, "
+        #     f"memory: {context.numel() * context.element_size() / (1024 * 1024):.4f} MB"
+        # )
         
         out = self._llm.model(context)
         logits = out.logits[0, -1, :]

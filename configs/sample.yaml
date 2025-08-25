@@ -6,6 +6,6 @@ thetas:
   - 0.8
   - 1.0
 model:
-  - llama3_1-70b
+  # - llama3_1-70b
   - mistral
   - gemma2-27b
