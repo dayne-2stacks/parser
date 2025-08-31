@@ -86,6 +86,15 @@ class LocalLLM:
             )
             self.tokenizer.save_pretrained(self.save_local_tokenizers_dir)
 
+        # Ensure we have a valid padding token id for batched inputs.
+        # Many causal LMs (e.g., LLaMA) don't define a pad token; use EOS instead.
+        if getattr(self.tokenizer, "pad_token_id", None) is None:
+            try:
+                self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+            except Exception:
+                # Fallback to 0 if EOS is unavailable (unlikely for supported models)
+                self.tokenizer.pad_token_id = 0
+
         # Ensure the model stays in inference mode to avoid unnecessary
         # gradient allocations when parsing.
         self.model.eval()
