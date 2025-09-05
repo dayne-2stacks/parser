@@ -181,15 +181,15 @@ class TokenLevelProbabilityProvider:
             # Sort children by probability descending
             sorted_probs, sorted_idx = torch.sort(child_probs, descending=True)
 
-            # Determine how many to keep using top-k/top-p and probability floor
+            # Determine how many to keep using top-p (preferred) or top-k
             keep_n = len(sorted_probs)
-            if self._filter_top_k is not None:
-                keep_n = min(keep_n, int(self._filter_top_k))
             if self._filter_top_p is not None:
                 cumsum = torch.cumsum(sorted_probs, dim=0)
                 # Number needed to reach top_p mass; ensure at least 1
                 needed = int((cumsum < float(self._filter_top_p)).sum().item()) + 1
-                keep_n = min(keep_n, max(1, needed))
+                keep_n = max(1, needed)
+            elif self._filter_top_k is not None:
+                keep_n = min(keep_n, int(self._filter_top_k))
             # Apply floor mask within the top region
             top_mask = torch.arange(len(sorted_probs), device=sorted_probs.device) < keep_n
             floor_mask = sorted_probs >= self._prob_floor
@@ -424,6 +424,8 @@ class TokenLevelProbabilityProvider:
 
             # Compute full distribution per span using cached first step
             for (start, end), span_str, ctx, tok_probs in zip(batch_spans, span_strs, contexts, first_step_probs):
+                # Count a prediction for each span (for metrics)
+                self._prediction_count += 1
                 span_probs_raw = self._predict_recursive(
                     ctx, self._trie, 1.0, depth=0, result_cache=None, cached_token_probs=tok_probs
                 )
