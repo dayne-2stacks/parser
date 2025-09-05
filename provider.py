@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Dict, Tuple, Set
+from typing import List, Dict, Tuple, Set, Optional
 import logging
 import os
 from gpu_logging_utils import (
@@ -7,7 +7,7 @@ from gpu_logging_utils import (
     log_cuda_memory_pytorch,
     flush_cuda_cache,
 )
-from nltk.grammar import Nonterminal
+from nltk.grammar import Nonterminal, PCFG
 import torch
 from torch.nn import functional as F
 
@@ -65,6 +65,11 @@ class TokenLevelProbabilityProvider:
         filter_top_k: int | None = 10,
         filter_top_p: float | None = 0.95,
         prob_floor: float = 1e-4,
+        # Router controls
+        grammar: Optional[PCFG] = None,
+        router_enabled: bool = False,
+        router_lex_min_prob: float = 0.9,
+        router_lex_ratio_threshold: float = 10.0,
     ):
 
         self._llm = llm
@@ -99,6 +104,57 @@ class TokenLevelProbabilityProvider:
         self._filter_top_k = filter_top_k
         self._filter_top_p = filter_top_p
         self._prob_floor = max(0.0, prob_floor)
+
+        # Router configuration and lexical index
+        self._router_enabled = bool(router_enabled)
+        self._router_lex_min = float(router_lex_min_prob)
+        self._router_lex_ratio = float(router_lex_ratio_threshold)
+        self._grammar: Optional[PCFG] = grammar
+        self._lex_index: Dict[str, Dict[str, float]] = {}
+        if self._grammar is not None:
+            self._build_lex_index()
+
+    def _build_lex_index(self) -> None:
+        """Build token -> {lhs_symbol: prob(A -> 'token')} mapping from the PCFG."""
+        lex_index: Dict[str, Dict[str, float]] = {}
+        for prod in self._grammar.productions():
+            rhs = prod.rhs()
+            if len(rhs) == 1 and isinstance(rhs[0], str):
+                word = rhs[0]
+                lhs_sym = prod.lhs().symbol()
+                lex_index.setdefault(word, {})[lhs_sym] = (
+                    lex_index.get(word, {}).get(lhs_sym, 0.0) + float(prod.prob())
+                )
+        self._lex_index = lex_index
+
+    def _router_span_probs_or_none(
+        self, sentence_text: str, start: int, end: int
+    ) -> Optional[Dict[Nonterminal, float]]:
+        """
+        Router heuristic: for single-token spans with a dominant grammar tag,
+        return a grammar-only distribution to avoid LLM; otherwise None.
+        """
+        if not self._router_enabled or self._grammar is None or not self._lex_index:
+            return None
+        if end - start != 1:
+            return None
+        tokens = sentence_text.split()
+        if not (0 <= start < len(tokens)):
+            return None
+        word = tokens[start]
+        by_nt = self._lex_index.get(word)
+        if not by_nt:
+            return None
+        total = sum(by_nt.values())
+        if total <= 0:
+            return None
+        items = sorted(((nt, p / total) for nt, p in by_nt.items()), key=lambda x: x[1], reverse=True)
+        top_nt, top_p = items[0]
+        second_p = items[1][1] if len(items) > 1 else 0.0
+        ratio = (top_p / second_p) if second_p > 0 else float("inf")
+        if top_p >= self._router_lex_min or ratio >= self._router_lex_ratio:
+            return {Nonterminal(nt): p for nt, p in items}
+        return None
 
     def _map_nonterminals_to_token_seqs(self) -> Dict[str, List[int]]:
         """Map non-terminals to their corresponding token id sequences."""
@@ -245,14 +301,9 @@ class TokenLevelProbabilityProvider:
             kept_sum = 0.0
             pruned_sum = 0.0
 
-        if self._space_token_id is not None:
-            # Add pruned child mass to leftover (end-of-label) but cap by remaining mass
-            base = float(token_probs[self._space_token_id].item())
-            leftover = min(1.0 - kept_sum, base + pruned_sum)
-            leftover = max(leftover, 0.0)
-        else:
-            # Without a specific end token, leftover absorbs pruned mass implicitly
-            leftover = max(1.0 - kept_sum, 0.0)
+        # After pruning, absorb all remaining mass (including pruned and non-child tokens)
+        # into the end-of-label path to preserve probability mass for shorter labels.
+        leftover = max(1.0 - kept_sum, 0.0)
 
         for nt in node.nts:
             results[nt] = results.get(nt, 0.0) + prob * leftover
@@ -283,19 +334,24 @@ class TokenLevelProbabilityProvider:
             context_parts = [f"{s}:{e}->{cat}" for (s, e), cat in history.items()]
             context_str = "; ".join(context_parts)
 
-            prompt = (
-                f"Given the possible nonterminal symbols {', '.join(self._nonterminals)}, "
-                f"previously recognised spans: {context_str}. "
-                "Using the nonterminal symbols of the Penn Treebank corpus, "
-                f"the phrase '{span_str}' in the text '{text}' forms the "
-                f"syntactic category of"
-            )
-            tokens = self._llm.tokenizer.encode(prompt, return_tensors="pt")
-            device = self._llm.model.device
-            span_probs_raw = self._predict_recursive(tokens.to(device), self._trie, 1.0)
-            span_probs: Dict[Nonterminal, float] = {
-                Nonterminal(nt): p for nt, p in span_probs_raw.items()
-            }
+            # Router: try grammar-only for confident single-token spans
+            routed = self._router_span_probs_or_none(text, start, end)
+            if routed is not None:
+                span_probs: Dict[Nonterminal, float] = routed
+            else:
+                prompt = (
+                    f"Given the possible nonterminal symbols {', '.join(self._nonterminals)}, "
+                    f"previously recognised spans: {context_str}. "
+                    "Using the nonterminal symbols of the Penn Treebank corpus, "
+                    f"the phrase '{span_str}' in the text '{text}' forms the "
+                    f"syntactic category of"
+                )
+                tokens = self._llm.tokenizer.encode(prompt, return_tensors="pt")
+                device = self._llm.model.device
+                span_probs_raw = self._predict_recursive(tokens.to(device), self._trie, 1.0)
+                span_probs: Dict[Nonterminal, float] = {
+                    Nonterminal(nt): p for nt, p in span_probs_raw.items()
+                }
             for nt, p in span_probs.items():
                 logits_logger.info(
                     f"Probability for non-terminal '{nt.symbol()}' in the span '{span_str}': {p:.8f}"
@@ -403,35 +459,51 @@ class TokenLevelProbabilityProvider:
             prompts: List[str] = []
             contexts: List[torch.Tensor] = []
             span_strs: List[str] = []
+            needs_llm_mask: List[bool] = []
 
             for start, end in batch_spans:
                 span_text = text.split()[start:end]
                 span_str = " ".join(span_text)
                 span_strs.append(span_str)
-                prompt = (
-                    f"Given the possible nonterminal symbols {', '.join(self._nonterminals)}, "
-                    f"previously recognised spans: {context_str}. "
-                    "Using the nonterminal symbols of the Penn Treebank corpus, "
-                    f"the phrase '{span_str}' in the text '{text}' forms the "
-                    f"syntactic category of"
-                )
-                prompts.append(prompt)
-                tokens = self._llm.tokenizer.encode(prompt, return_tensors="pt")
-                contexts.append(tokens.to(device))
+                routed = self._router_span_probs_or_none(text, start, end)
+                if routed is not None:
+                    result[(start, end)] = routed
+                    needs_llm_mask.append(False)
+                else:
+                    prompt = (
+                        f"Given the possible nonterminal symbols {', '.join(self._nonterminals)}, "
+                        f"previously recognised spans: {context_str}. "
+                        "Using the nonterminal symbols of the Penn Treebank corpus, "
+                        f"the phrase '{span_str}' in the text '{text}' forms the "
+                        f"syntactic category of"
+                    )
+                    prompts.append(prompt)
+                    tokens = self._llm.tokenizer.encode(prompt, return_tensors="pt")
+                    contexts.append(tokens.to(device))
+                    needs_llm_mask.append(True)
 
-            # Batched first-step probabilities
-            first_step_probs = self._batched_last_token_probs(contexts)
+            # Batched first-step probabilities only for spans requiring LLM
+            first_step_probs: List[torch.Tensor] = []
+            if any(needs_llm_mask):
+                first_step_probs = self._batched_last_token_probs(contexts)
 
             # Compute full distribution per span using cached first step
-            for (start, end), span_str, ctx, tok_probs in zip(batch_spans, span_strs, contexts, first_step_probs):
+            llm_idx = 0
+            for (start, end), span_str, need_llm in zip(batch_spans, span_strs, needs_llm_mask):
                 # Count a prediction for each span (for metrics)
                 self._prediction_count += 1
-                span_probs_raw = self._predict_recursive(
-                    ctx, self._trie, 1.0, depth=0, result_cache=None, cached_token_probs=tok_probs
-                )
-                span_probs: Dict[Nonterminal, float] = {
-                    Nonterminal(nt): p for nt, p in span_probs_raw.items()
-                }
+                if need_llm:
+                    ctx = contexts[llm_idx]
+                    tok_probs = first_step_probs[llm_idx]
+                    llm_idx += 1
+                    span_probs_raw = self._predict_recursive(
+                        ctx, self._trie, 1.0, depth=0, result_cache=None, cached_token_probs=tok_probs
+                    )
+                    span_probs: Dict[Nonterminal, float] = {
+                        Nonterminal(nt): p for nt, p in span_probs_raw.items()
+                    }
+                else:
+                    span_probs = result[(start, end)]
 
                 for nt, p in span_probs.items():
                     logits_logger.info(

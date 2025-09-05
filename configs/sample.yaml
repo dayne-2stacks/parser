@@ -8,4 +8,18 @@ thetas:
 model:
   # - llama3_1-70b
   - mistral
-  - gemma2-27b
+  # - gemma2-27b
+
+# Provider/LLM efficiency settings
+# Number of spans to batch together for the first-step logits
+precompute_batch_size: 10
+
+# Pruning controls (set top_p to prioritize cumulative mass; leave top_k null)
+filter_top_p: 0.95
+filter_top_k: null
+prob_floor: 0.0001
+
+# Router controls (grammar-vs-LLM)
+router_enabled: true
+router_lex_min_prob: 0.9
+router_lex_ratio_threshold: 10.0

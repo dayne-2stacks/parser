@@ -42,7 +42,15 @@ def main():
     
     logger.info(f"Creating token level probability provider with nonterminals: {nonterminals}")
     log_cuda_memory_pytorch("before_provider_init")
-    provider = TokenLevelProbabilityProvider(llm, nonterminals, cache_size=2048)
+    provider = TokenLevelProbabilityProvider(
+        llm,
+        nonterminals,
+        cache_size=2048,
+        grammar=grammar,
+        router_enabled=True,
+        router_lex_min_prob=0.9,
+        router_lex_ratio_threshold=10.0,
+    )
     log_cuda_memory_pytorch("after_provider_init")
 
     logger.info("Creating token-level viterbi parser")

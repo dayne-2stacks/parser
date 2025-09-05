@@ -135,6 +135,19 @@ def main(path: str):
             print(f"- {loc}")
         raise FileNotFoundError(f"EVALB directory not found. Please install EVALB or provide the correct path.")
     
+    # Provider/LLM configuration knobs (with safe defaults)
+    provider_kwargs = {
+        "precompute_batch_size": config.get("precompute_batch_size", 5),
+        "filter_top_p": config.get("filter_top_p", 0.95),
+        "filter_top_k": config.get("filter_top_k", None),
+        "prob_floor": config.get("prob_floor", 1e-4),
+        # Router controls
+        "grammar": grammar,
+        "router_enabled": config.get("router_enabled", False),
+        "router_lex_min_prob": config.get("router_lex_min_prob", 0.9),
+        "router_lex_ratio_threshold": config.get("router_lex_ratio_threshold", 10.0),
+    }
+
     for theta, model_name in itertools.product(config["thetas"], config["model"]):
         print(f"\n\n--- Evaluating with theta={theta}, model={model_name} ---")
         
@@ -150,7 +163,12 @@ def main(path: str):
                 
                 print(f"Loading model: {model_name}")
                 llm = LocalLLM(model_name=model_name)
-                provider = TokenLevelProbabilityProvider(llm, nonterminals, cache_size=2048)
+                provider = TokenLevelProbabilityProvider(
+                    llm,
+                    nonterminals,
+                    cache_size=2048,
+                    **provider_kwargs,
+                )
                 current_model = model_name
             
             parser = TokenLevelViterbiParser(
